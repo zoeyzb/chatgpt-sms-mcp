@@ -16,6 +16,12 @@ const defaultRunner: CommandRunner = {
   }
 };
 
+interface MessagesAccount {
+  id: string;
+  type: string;
+  description: string;
+}
+
 function applescriptString(value: string): string {
   return JSON.stringify(value);
 }
@@ -25,6 +31,32 @@ function appleEpochToIso(raw: number): string {
   return new Date((seconds + 978307200) * 1000).toISOString();
 }
 
+const ACCOUNT_DISCOVERY_SCRIPT = `
+  tell application "Messages"
+    set accountList to every account
+    set output to ""
+    repeat with i from 1 to count of accountList
+      set a to item i of accountList
+      try
+        set aid to id of a as text
+      on error
+        set aid to "UNKNOWN"
+      end try
+      try
+        set adesc to description of a as text
+      on error
+        set adesc to "missing value"
+      end try
+      try
+        set atype to service type of a as text
+      on error errMsg number errNum
+        set atype to "ERROR " & errNum
+      end try
+      set output to output & aid & tab & atype & tab & adesc & linefeed
+    end repeat
+    return output
+  end tell`;
+
 export class MessagesAdapter implements MessagingProvider {
   readonly name = 'messages' as const;
   constructor(
@@ -32,6 +64,28 @@ export class MessagesAdapter implements MessagingProvider {
     private readonly preferredService?: string,
     private readonly runner: CommandRunner = defaultRunner
   ) {}
+
+  private async discoverAccounts(): Promise<MessagesAccount[]> {
+    const { stdout } = await this.runner.run('osascript', ['-e', ACCOUNT_DISCOVERY_SCRIPT]);
+    return stdout
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(line => {
+        const [id = '', type = '', description = ''] = line.split('\t');
+        return { id: id.trim(), type: type.trim(), description: description.trim() };
+      })
+      .filter(account => account.id && account.id !== 'UNKNOWN');
+  }
+
+  private chooseSmsAccount(accounts: MessagesAccount[]): MessagesAccount | undefined {
+    if (this.preferredService) {
+      return accounts.find(account =>
+        account.id === this.preferredService || account.description === this.preferredService
+      );
+    }
+    return accounts.find(account => account.type === 'SMS');
+  }
 
   async status(): Promise<ProviderStatus> {
     const details: string[] = [];
@@ -41,36 +95,47 @@ export class MessagesAdapter implements MessagingProvider {
     catch { details.push(`Messages DB not readable: ${this.dbPath}`); }
 
     try {
-      const { stdout } = await this.runner.run('osascript', ['-e', 'tell application "Messages" to get name of every service']);
-      sendAvailable = true;
-      details.push(`Messages services: ${stdout.trim() || 'available'}`);
+      const accounts = await this.discoverAccounts();
+      const smsAccount = this.chooseSmsAccount(accounts);
+      if (smsAccount) {
+        sendAvailable = true;
+        details.push(`SMS account: ${smsAccount.id}`);
+      } else if (this.preferredService) {
+        details.push(`Preferred Messages account not found: ${this.preferredService}`);
+      } else {
+        details.push('No SMS account exposed by macOS Messages.');
+      }
+      const otherAccounts = accounts.filter(account => account !== smsAccount);
+      if (otherAccounts.length) {
+        details.push(`Other Messages accounts: ${otherAccounts.map(account => `${account.id} (${account.type || 'unknown'})`).join(', ')}`);
+      }
     } catch (error) {
       details.push(`Apple Events unavailable: ${(error as Error).message}`);
     }
-    if (this.preferredService) details.push(`Preferred service: ${this.preferredService}`);
+    if (this.preferredService) details.push(`Preferred service/account: ${this.preferredService}`);
     return { provider: this.name, available: readAvailable || sendAvailable, readAvailable, sendAvailable, details };
   }
 
   async send(recipient: string, body: string): Promise<SendResult> {
-    const serviceSelector = this.preferredService
-      ? `first service whose name is ${applescriptString(this.preferredService)}`
-      : 'first service whose service type is SMS';
+    const accounts = await this.discoverAccounts();
+    const smsAccount = this.chooseSmsAccount(accounts);
+    if (!smsAccount) {
+      throw new Error(
+        this.preferredService
+          ? `Configured Messages account not found: ${this.preferredService}`
+          : 'No SMS account is exposed by macOS Messages. Confirm iPhone Text Message Forwarding is enabled.'
+      );
+    }
+
     const script = `
       tell application "Messages"
-        set targetService to ${serviceSelector}
-        set targetBuddy to buddy ${applescriptString(recipient)} of targetService
-        send ${applescriptString(body)} to targetBuddy
+        set targetAccount to account id ${applescriptString(smsAccount.id)}
+        set targetParticipant to participant ${applescriptString(recipient)} of targetAccount
+        send ${applescriptString(body)} to targetParticipant
       end tell`;
-    try {
-      await this.runner.run('osascript', ['-e', script]);
-      return { status: 'sent' };
-    } catch (error) {
-      const message = (error as Error).message;
-      if (!this.preferredService && /service type is SMS|Can't get service/i.test(message)) {
-        throw new Error('No SMS service is exposed by macOS Messages. Configure MESSAGES_SERVICE_NAME after checking get_provider_status.');
-      }
-      throw error;
-    }
+
+    await this.runner.run('osascript', ['-e', script]);
+    return { status: 'sent' };
   }
 
   private async query(sql: string): Promise<string[]> {
