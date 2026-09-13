@@ -172,3 +172,42 @@ describe('relay server', () => {
     expect(body.job.providerMessageId).toBe('123');
   });
 });
+
+describe('relay worker polling', () => {
+  it('leases the next queued job', async () => {
+    const { relay, url } = await startServer();
+    servers.push(relay);
+
+    await authedFetch(url, '/jobs', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipient: '+13125551234',
+        message: 'worker hello',
+        idempotencyKey: 'worker-job-1'
+      })
+    });
+
+    const lease = await authedFetch(url, '/jobs/lease-next', {
+      method: 'POST'
+    });
+
+    expect(lease.status).toBe(200);
+
+    const body = await lease.json();
+
+    expect(body.job.recipient).toBe('+13125551234');
+    expect(body.job.message).toBe('worker hello');
+    expect(body.job.state).toBe('leased');
+  });
+
+  it('returns 204 when no queued job exists', async () => {
+    const { relay, url } = await startServer();
+    servers.push(relay);
+
+    const lease = await authedFetch(url, '/jobs/lease-next', {
+      method: 'POST'
+    });
+
+    expect(lease.status).toBe(204);
+  });
+});

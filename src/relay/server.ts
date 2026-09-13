@@ -120,6 +120,39 @@ export function createRelayServer(options: RelayServerOptions) {
       }
 
       if (
+        method === 'POST' &&
+        url.pathname === '/jobs/lease-next'
+      ) {
+        const now = Date.now();
+
+        const job = [...jobs.values()].find((candidate) => {
+          if (candidate.state === 'queued') return true;
+
+          if (
+            candidate.state === 'leased' &&
+            candidate.leaseExpiresAt &&
+            candidate.leaseExpiresAt <= now
+          ) {
+            return true;
+          }
+
+          return false;
+        });
+
+        if (!job) {
+          res.statusCode = 204;
+          res.end();
+          return;
+        }
+
+        job.state = 'leased';
+        job.leaseExpiresAt = now + options.leaseMs;
+
+        sendJson(res, 200, { job });
+        return;
+      }
+
+      if (
         method === 'GET' &&
         parts.length === 2 &&
         parts[0] === 'jobs'
