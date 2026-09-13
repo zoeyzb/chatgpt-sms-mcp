@@ -91,8 +91,13 @@ export class MessagesAdapter implements MessagingProvider {
     const details: string[] = [];
     let readAvailable = false;
     let sendAvailable = false;
-    try { await fs.access(this.dbPath); readAvailable = true; }
-    catch { details.push(`Messages DB not readable: ${this.dbPath}`); }
+    try {
+      await fs.access(this.dbPath);
+      await this.query('SELECT 1;');
+      readAvailable = true;
+    } catch {
+      details.push(`Messages DB not readable: ${this.dbPath}`);
+    }
 
     try {
       const accounts = await this.discoverAccounts();
@@ -134,8 +139,63 @@ export class MessagesAdapter implements MessagingProvider {
         send ${applescriptString(body)} to targetParticipant
       end tell`;
 
+    const beforeRows = await this.query('SELECT COALESCE(MAX(ROWID),0) FROM message;');
+    const beforeRowId = Number(beforeRows[0] ?? 0);
+
     await this.runner.run('osascript', ['-e', script]);
-    return { status: 'sent' };
+
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const escapedRecipient = recipient.replaceAll("'", "''");
+      const rows = await this.query(`
+        SELECT
+          m.ROWID,
+          COALESCE(m.is_sent,0),
+          COALESCE(m.is_delivered,0),
+          COALESCE(m.is_finished,0),
+          COALESCE(m.error,0)
+        FROM message m
+        LEFT JOIN handle h ON h.ROWID = m.handle_id
+        WHERE m.ROWID > ${beforeRowId}
+          AND m.is_from_me = 1
+          AND h.id = '${escapedRecipient}'
+        ORDER BY m.ROWID DESC
+        LIMIT 1;
+      `);
+
+      if (rows[0]) {
+        const [rowId, isSent, _isDelivered, isFinished, error] =
+          rows[0].split('\u001f');
+
+        if (isSent === '1') {
+          return { status: 'sent', providerMessageId: rowId };
+        }
+
+        if (isFinished === '1' && Number(error) !== 0) {
+          return {
+            status: 'failed',
+            providerMessageId: rowId,
+            detail: `Messages finished with error ${error}`
+          };
+        }
+
+        if (attempt === 3) {
+          return {
+            status: 'unknown',
+            providerMessageId: rowId,
+            detail: 'Messages accepted the request but did not confirm SMS transmission.'
+          };
+        }
+      }
+
+      if (attempt < 3) {
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+    }
+
+    return {
+      status: 'unknown',
+      detail: 'No matching outbound Messages row appeared before verification timed out.'
+    };
   }
 
   private async query(sql: string): Promise<string[]> {
@@ -187,7 +247,7 @@ export class MessagesAdapter implements MessagingProvider {
     if (!/^\d+$/.test(id)) throw new Error('Messages message_id must be numeric');
     const rows = await this.query(`SELECT m.ROWID, COALESCE(c.guid,''), COALESCE(h.id,''), COALESCE(m.text,''), m.date, m.is_from_me FROM message m LEFT JOIN handle h ON h.ROWID=m.handle_id LEFT JOIN chat_message_join cmj ON cmj.message_id=m.ROWID LEFT JOIN chat c ON c.ROWID=cmj.chat_id WHERE m.ROWID=${id} LIMIT 1;`);
     if (!rows[0]) return null;
-    const [mid, threadId, handle, body, rawDate, isFromMe] = rows[0].split('\\u001f');
+    const [mid, threadId, handle, body, rawDate, isFromMe] = rows[0].split('\u001f');
     const outbound = isFromMe === '1';
     return { id: mid, provider: this.name, threadId: threadId || mid, sender: outbound ? 'me' : handle, recipient: outbound ? handle : 'me', body, timestamp: appleEpochToIso(Number(rawDate || 0)), direction: outbound ? 'outbound' : 'inbound', status: outbound ? 'sent' : 'received' };
   }

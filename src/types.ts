@@ -28,7 +28,7 @@ export interface ProviderStatus {
 }
 
 export interface SendResult {
-  status: 'sent' | 'unknown';
+  status: 'sent' | 'failed' | 'unknown';
   providerMessageId?: string;
   detail?: string;
 }
