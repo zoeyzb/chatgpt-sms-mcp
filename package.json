@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "check": "npm run build && npm test",
     "status": "tsx src/cli.ts status",
-    "dry-run": "tsx src/cli.ts dry-run"
+    "dry-run": "tsx src/cli.ts dry-run",
+    "google-voice-login": "tsx src/cli.ts google-voice-login"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
