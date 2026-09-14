@@ -99,7 +99,19 @@ export function createRelayServer(options: RelayServerOptions) {
         const existingId = byIdempotencyKey.get(body.idempotencyKey);
 
         if (existingId) {
-          sendJson(res, 200, { job: jobs.get(existingId) });
+          const existing = jobs.get(existingId)!;
+
+          if (
+            existing.recipient !== body.recipient ||
+            existing.message !== body.message
+          ) {
+            sendJson(res, 409, {
+              error: 'idempotency key already used for different job'
+            });
+            return;
+          }
+
+          sendJson(res, 200, { job: existing });
           return;
         }
 
@@ -125,19 +137,9 @@ export function createRelayServer(options: RelayServerOptions) {
       ) {
         const now = Date.now();
 
-        const job = [...jobs.values()].find((candidate) => {
-          if (candidate.state === 'queued') return true;
-
-          if (
-            candidate.state === 'leased' &&
-            candidate.leaseExpiresAt &&
-            candidate.leaseExpiresAt <= now
-          ) {
-            return true;
-          }
-
-          return false;
-        });
+        const job = [...jobs.values()].find(
+          (candidate) => candidate.state === 'queued'
+        );
 
         if (!job) {
           res.statusCode = 204;
@@ -183,11 +185,7 @@ export function createRelayServer(options: RelayServerOptions) {
 
         const now = Date.now();
 
-        if (
-          job.state === 'leased' &&
-          job.leaseExpiresAt &&
-          job.leaseExpiresAt > now
-        ) {
+        if (job.state === 'leased') {
           sendJson(res, 409, { error: 'already leased' });
           return;
         }

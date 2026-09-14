@@ -211,3 +211,90 @@ describe('relay worker polling', () => {
     expect(lease.status).toBe(204);
   });
 });
+
+
+describe('relay idempotency safety', () => {
+  it('rejects reuse of an idempotency key for different content', async () => {
+    const { relay, url } = await startServer();
+    servers.push(relay);
+
+    await authedFetch(url, '/jobs', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipient: '+13125551234',
+        message: 'first message',
+        idempotencyKey: 'collision-test'
+      })
+    });
+
+    const response = await authedFetch(url, '/jobs', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipient: '+13125551234',
+        message: 'different message',
+        idempotencyKey: 'collision-test'
+      })
+    });
+
+    expect(response.status).toBe(409);
+  });
+});
+
+
+describe('relay lease safety', () => {
+  it('does not lease an already-leased job again after expiry', async () => {
+    const relay = createRelayServer({
+      authToken: token,
+      leaseMs: 1
+    });
+
+    await new Promise<void>((resolve) => {
+      relay.server.listen(0, '127.0.0.1', resolve);
+    });
+
+    servers.push(relay);
+
+    const address = relay.server.address();
+
+    if (!address || typeof address === 'string') {
+      throw new Error('server failed to start');
+    }
+
+    const url = `http://127.0.0.1:${address.port}`;
+
+    const create = await authedFetch(url, '/jobs', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipient: '+13125551234',
+        message: 'send once only',
+        idempotencyKey: 'lease-expiry-safety'
+      })
+    });
+
+    const created = await create.json();
+
+    const firstLease = await authedFetch(
+      url,
+      `/jobs/${created.job.id}/lease`,
+      { method: 'POST' }
+    );
+
+    expect(firstLease.status).toBe(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const secondLease = await authedFetch(
+      url,
+      `/jobs/${created.job.id}/lease`,
+      { method: 'POST' }
+    );
+
+    expect(secondLease.status).toBe(409);
+
+    const poll = await authedFetch(url, '/jobs/lease-next', {
+      method: 'POST'
+    });
+
+    expect(poll.status).toBe(204);
+  });
+});
