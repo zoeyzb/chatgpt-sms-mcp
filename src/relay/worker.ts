@@ -50,10 +50,21 @@ export async function runRelayWorkerOnce(
   const lease = (await leaseResponse.json()) as LeaseResponse;
   const job = lease.job;
 
-  const result = await options.messages.send(
-    job.recipient,
-    job.message
-  );
+  let result: SendResult;
+
+  try {
+    result = await options.messages.send(
+      job.recipient,
+      job.message
+    );
+  } catch (error) {
+    result = {
+      status: 'unknown',
+      detail:
+        'Messages send threw: ' +
+        (error instanceof Error ? error.message : String(error))
+    };
+  }
 
   const resultResponse = await fetch(
     `${baseUrl}/jobs/${encodeURIComponent(job.id)}/result`,

@@ -176,3 +176,45 @@ describe('relay worker', () => {
     expect(job.detail).toContain('error 4');
   });
 });
+
+
+describe('relay worker exception safety', () => {
+  it('marks the job unknown when Messages throws and does not retry', async () => {
+    const { relay, url } = await startServer();
+    servers.push(relay);
+
+    const adapter = new TelloRelayAdapter({
+      relayUrl: url,
+      authToken: token
+    });
+
+    await adapter.send(
+      '+13125551234',
+      'exception safety test',
+      'worker-exception-safety'
+    );
+
+    let sendCalls = 0;
+
+    const fakeMessages = {
+      async send() {
+        sendCalls++;
+        throw new Error('Messages connection dropped');
+      }
+    };
+
+    const worked = await runRelayWorkerOnce({
+      relayUrl: url,
+      authToken: token,
+      messages: fakeMessages
+    });
+
+    expect(worked).toBe(true);
+    expect(sendCalls).toBe(1);
+
+    const job = [...relay.jobs.values()][0];
+
+    expect(job.state).toBe('unknown');
+    expect(job.detail).toContain('Messages connection dropped');
+  });
+});
