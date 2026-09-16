@@ -5,12 +5,16 @@ import { interactiveGoogleVoiceLogin } from './providers/googleVoice.js';
 const command = process.argv[2];
 const service = createMessagingService();
 
+function printAndExit(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`, () => process.exit(0));
+}
+
 if (command === 'status') {
-  console.log(JSON.stringify(await service.statuses(), null, 2));
+  printAndExit(await service.statuses());
 } else if (command === 'dry-run') {
-  console.log(JSON.stringify(await service.prepareOrSend({ provider: 'messages', recipient: '+13125550100', message: 'dry run only - do not send', idempotencyKey: `dryrun-${Date.now()}` }), null, 2));
+  printAndExit(await service.prepareOrSend({ provider: 'messages', recipient: '+13125550100', message: 'dry run only - do not send', idempotencyKey: `dryrun-${Date.now()}` }));
 } else if (command === 'gv-conversations') {
-  console.log(JSON.stringify(await service.listConversations('google_voice', 20), null, 2));
+  printAndExit(await service.listConversations('google_voice', 20));
 } else if (command === 'google-voice-login') {
   const config = loadConfig(process.env);
   if (!config.googleVoiceEnabled) {
