@@ -172,41 +172,12 @@ export class GoogleVoiceAdapter implements MessagingProvider {
       if (match) return decodeURIComponent(match[1]);
     }
 
-    return page.evaluate(({ index: itemIndex, itemSelector, clickableSelector }) => {
-      return new Promise<string>(resolve => {
-        let settled = false;
-        const originalPush = history.pushState;
-        const originalReplace = history.replaceState;
-        const finish = (value: string) => {
-          if (settled) return;
-          settled = true;
-          history.pushState = originalPush;
-          history.replaceState = originalReplace;
-          resolve(value);
-        };
-        const extract = (url: string | URL | null | undefined) => {
-          const value = url?.toString() ?? '';
-          const match = value.match(/[?&]itemId=([^&]+)/);
-          return match ? decodeURIComponent(match[1]) : '';
-        };
+    const clickable = item.locator(S.conversationClickable).first();
+    await clickable.click({ timeout: 8_000 });
+    await page.waitForURL(url => /[?&]itemId=/.test(url.toString()), { timeout: 3_000 }).catch(() => undefined);
 
-        history.pushState = function(_data: unknown, _unused: string, url?: string | URL | null) {
-          finish(extract(url));
-        };
-        history.replaceState = function(_data: unknown, _unused: string, url?: string | URL | null) {
-          finish(extract(url));
-        };
-
-        const rows = document.querySelectorAll(itemSelector);
-        const target = rows[itemIndex]?.querySelector(clickableSelector) as HTMLElement | null;
-        if (!target) {
-          finish('');
-          return;
-        }
-        target.click();
-        window.setTimeout(() => finish(''), 2500);
-      });
-    }, { index, itemSelector: S.conversationItem, clickableSelector: S.conversationClickable });
+    const match = page.url().match(/[?&]itemId=([^&]+)/);
+    return match ? decodeURIComponent(match[1]) : '';
   }
 
   private async conversationRows(page: Page, limit: number, unreadOnly = false): Promise<VoiceConversationRow[]> {
