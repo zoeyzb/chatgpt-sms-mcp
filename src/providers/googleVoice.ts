@@ -2,12 +2,15 @@ import type { BrowserContext, Page } from 'playwright';
 import type { Conversation, Message, MessagingProvider, ProviderStatus, SendResult } from '../types.js';
 import {
   decodeGoogleVoiceMessageId,
+  googleVoiceCdpEndpoints,
   GOOGLE_VOICE_SELECTORS as S,
   normalizeGoogleVoiceContact,
   rawMessageToMessage
 } from './googleVoiceDom.js';
 
 const VOICE_MESSAGES_URL = 'https://voice.google.com/u/0/messages';
+const attachedContexts = new WeakSet<BrowserContext>();
+let cachedAttachedContext: BrowserContext | null = null;
 
 interface VoiceConversationRow {
   id: string;
@@ -17,7 +20,30 @@ interface VoiceConversationRow {
   unread: boolean;
 }
 
+async function connectExistingChrome(): Promise<BrowserContext | null> {
+  if (cachedAttachedContext?.browser()?.isConnected()) return cachedAttachedContext;
+  cachedAttachedContext = null;
+
+  const { chromium } = await import('playwright');
+  for (const endpoint of googleVoiceCdpEndpoints()) {
+    try {
+      const browser = await chromium.connectOverCDP(endpoint, { timeout: 1_500 });
+      const context = browser.contexts()[0];
+      if (!context) continue;
+      attachedContexts.add(context);
+      cachedAttachedContext = context;
+      return context;
+    } catch {
+      // Fall through to the next local DevTools endpoint, then to a persistent profile.
+    }
+  }
+  return null;
+}
+
 async function launchProfile(profileDir: string, headless: boolean): Promise<BrowserContext> {
+  const attached = await connectExistingChrome();
+  if (attached) return attached;
+
   const { chromium } = await import('playwright');
   try {
     return await chromium.launchPersistentContext(profileDir, {
@@ -32,9 +58,18 @@ async function launchProfile(profileDir: string, headless: boolean): Promise<Bro
         viewport: { width: 1280, height: 900 }
       });
     } catch (bundledError) {
-      throw new Error(`Could not launch Google Voice browser profile. Chrome: ${(chromeError as Error).message}; Chromium: ${(bundledError as Error).message}`);
+      throw new Error(`Could not connect to the existing Google Voice Chrome session or launch the Google Voice browser profile. Chrome: ${(chromeError as Error).message}; Chromium: ${(bundledError as Error).message}`);
     }
   }
+}
+
+async function releaseProfile(context: BrowserContext): Promise<void> {
+  if (attachedContexts.has(context)) return;
+  await context.close();
+}
+
+async function voicePage(context: BrowserContext): Promise<Page> {
+  return context.pages().find(page => /^https:\/\/voice\.google\.com\//.test(page.url())) ?? await context.newPage();
 }
 
 async function gotoMessages(page: Page): Promise<void> {
@@ -43,6 +78,7 @@ async function gotoMessages(page: Page): Promise<void> {
 }
 
 async function loggedIn(page: Page): Promise<boolean> {
+  if (!/^https:\/\/voice\.google\.com\//.test(page.url())) return false;
   if (/accounts\.google\.com/.test(page.url())) return false;
   return page.locator(S.loggedInIndicator).count().then(count => count > 0).catch(() => false);
 }
@@ -50,13 +86,13 @@ async function loggedIn(page: Page): Promise<boolean> {
 export async function interactiveGoogleVoiceLogin(profileDir: string): Promise<void> {
   const context = await launchProfile(profileDir, false);
   try {
-    const page = context.pages()[0] ?? await context.newPage();
+    const page = await voicePage(context);
     await page.goto(VOICE_MESSAGES_URL, { waitUntil: 'domcontentloaded', timeout: 20_000 });
     if (await loggedIn(page)) return;
     process.stderr.write('Google Voice login window opened. Sign in to the Google account that owns the Voice number; this command will finish automatically when Messages is available.\n');
     await page.waitForSelector(S.loggedInIndicator, { timeout: 0 });
   } finally {
-    await context.close();
+    await releaseProfile(context);
   }
 }
 
@@ -78,7 +114,7 @@ export class GoogleVoiceAdapter implements MessagingProvider {
     try {
       const context = await launchProfile(this.profileDir, this.headless);
       try {
-        const page = context.pages()[0] ?? await context.newPage();
+        const page = await voicePage(context);
         await page.goto(VOICE_MESSAGES_URL, { waitUntil: 'domcontentloaded', timeout: 20_000 });
         const authenticated = await loggedIn(page);
         return {
@@ -87,11 +123,11 @@ export class GoogleVoiceAdapter implements MessagingProvider {
           readAvailable: authenticated,
           sendAvailable: authenticated,
           details: authenticated
-            ? ['Authenticated Google Voice browser profile detected.', 'Read, search, conversation listing, lookup, reply resolution, and send automation are enabled.', 'Unofficial UI automation: Google Voice DOM changes can require selector maintenance.']
-            : ['Google Voice login is not complete. Run npm run google-voice-login.', 'No password or Google cookies are stored in this repository.']
+            ? ['Authenticated Google Voice browser session detected.', 'Read, search, conversation listing, lookup, reply resolution, and send automation are enabled.', 'Unofficial UI automation: Google Voice DOM changes can require selector maintenance.']
+            : ['Google Voice login is not complete. Open Chrome with remote debugging or run npm run google-voice-login.', 'No password or Google cookies are stored in this repository.']
         };
       } finally {
-        await context.close();
+        await releaseProfile(context);
       }
     } catch (error) {
       return { provider: this.name, available: false, readAvailable: false, sendAvailable: false, details: [(error as Error).message] };
@@ -102,12 +138,12 @@ export class GoogleVoiceAdapter implements MessagingProvider {
     if (!this.enabled) throw new Error('Google Voice adapter is disabled. Set GOOGLE_VOICE_ENABLED=true.');
     const context = await launchProfile(this.profileDir, this.headless);
     try {
-      const page = context.pages()[0] ?? await context.newPage();
+      const page = await voicePage(context);
       await gotoMessages(page);
-      if (!(await loggedIn(page))) throw new Error('Google Voice login required. Run npm run google-voice-login first.');
+      if (!(await loggedIn(page))) throw new Error('Google Voice login required. Open the authenticated Chrome debugging session or run npm run google-voice-login first.');
       return await fn(page);
     } finally {
-      await context.close();
+      await releaseProfile(context);
     }
   }
 
