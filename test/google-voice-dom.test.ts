@@ -2,6 +2,8 @@ import { describe, expect, test } from 'vitest';
 import {
   buildGoogleVoiceMessageId,
   decodeGoogleVoiceMessageId,
+  googleVoiceCdpEndpoints,
+  GOOGLE_VOICE_SELECTORS,
   normalizeGoogleVoiceContact,
   rawMessageToMessage
 } from '../src/providers/googleVoiceDom.js';
@@ -33,5 +35,20 @@ describe('Google Voice DOM mapping', () => {
     expect(message.recipient).toBe('me');
     expect(message.threadId).toBe('t.+13125550199');
     expect(message.body).toBe('Are you still open?');
+  });
+
+  test('prefers the IPv6 Chrome DevTools endpoint and allows an explicit override', () => {
+    expect(googleVoiceCdpEndpoints({})).toEqual([
+      'http://[::1]:9222',
+      'http://127.0.0.1:9222'
+    ]);
+    expect(googleVoiceCdpEndpoints({ GOOGLE_VOICE_CDP_URL: 'http://localhost:9333' })).toEqual([
+      'http://localhost:9333'
+    ]);
+  });
+
+  test('treats the current thread list and compose button as authenticated UI signals', () => {
+    expect(GOOGLE_VOICE_SELECTORS.loggedInIndicator).toContain('gv-thread-list-item');
+    expect(GOOGLE_VOICE_SELECTORS.loggedInIndicator).toContain('Send new message');
   });
 });
