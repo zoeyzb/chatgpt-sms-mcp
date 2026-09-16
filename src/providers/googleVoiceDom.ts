@@ -10,7 +10,7 @@ export interface RawGoogleVoiceMessage {
 }
 
 export const GOOGLE_VOICE_SELECTORS = {
-  loggedInIndicator: '[gv-test-id="sidenav-messages"]',
+  loggedInIndicator: '[gv-test-id="sidenav-messages"], [aria-label="Send new message"], gv-thread-list-item',
   conversationItem: 'gv-thread-list-item',
   conversationClickable: '.container',
   conversationContact: 'gv-annotation.participants',
@@ -27,6 +27,12 @@ export const GOOGLE_VOICE_SELECTORS = {
   recipientInput: 'input[placeholder="Type a name or phone number"]',
   sendToLabel: '.send-to-label'
 } as const;
+
+export function googleVoiceCdpEndpoints(env: Record<string, string | undefined> = process.env): string[] {
+  const configured = env.GOOGLE_VOICE_CDP_URL?.trim();
+  if (configured) return [configured];
+  return ['http://[::1]:9222', 'http://127.0.0.1:9222'];
+}
 
 export function normalizeGoogleVoiceContact(value: string): string {
   const trimmed = value.replace(/\s+/g, ' ').trim();
